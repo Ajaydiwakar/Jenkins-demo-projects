@@ -10,6 +10,7 @@ pipeline {
         IMAGE_TAG      = "${BUILD_NUMBER}"
         APP_PORT       = '5000'
         AUTH_SECRET    = credentials('demo-auth-secret')
+        SCANNER_HOME   = tool 'SonarScanner'
     }
 
     stages {
@@ -26,13 +27,14 @@ pipeline {
                         python3 -m venv venv
                         . venv/bin/activate
                         pip install --no-cache-dir -r requirements.txt
-                        PYTHONPATH=. pytest tests/
+                        mkdir -p reports
+                        PYTHONPATH=. pytest --junitxml=reports/pytest.xml tests/
                     '''
                 }
             }
             post {
                 always {
-                    junit allowEmptyResults: true, testResults: 'flask-auth-microservice/target/surefire-reports/*.xml'
+                    junit allowEmptyResults: true, testResults: 'flask-auth-microservice/reports/pytest.xml'
                 }
             }
         }
@@ -42,7 +44,7 @@ pipeline {
                 dir('flask-auth-microservice') {
                     withSonarQubeEnv('SonarQube') {
                         sh '''
-                            sonar-scanner \
+                            ${SCANNER_HOME}/bin/sonar-scanner \
                               -Dsonar.projectKey=flask-auth-microservice \
                               -Dsonar.projectName="Flask Auth Microservice" \
                               -Dsonar.sources=. \
