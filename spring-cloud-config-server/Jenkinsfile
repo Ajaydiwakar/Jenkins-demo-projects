@@ -1,0 +1,71 @@
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME = 'spring-config-server'
+        IMAGE_TAG = "latest"
+        NETWORK = 'jenkins-net'
+        PORT = '8888'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Maven Build & Test') {
+            steps {
+                sh 'mvn clean install'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh 'mvn sonar:sonar'
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${APP_NAME}:${IMAGE_TAG}"
+            }
+        }
+
+        stage('Deploy to Local Network') {
+            steps {
+                script {
+                    sh "docker rm -f ${APP_NAME}-container || true"
+                    
+                    sh """
+                        docker run -d \
+                          --name ${APP_NAME}-container \
+                          --network ${NETWORK} \
+                          -p ${PORT}:${PORT} \
+                          ${APP_NAME}:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Pipeline execution complete.'
+            sh 'docker image prune -f'
+            junit 'target/surefire-reports/*.xml'
+        }
+        success {
+            echo "Successfully deployed ${APP_NAME} to http://localhost:${PORT}"
+        }
+    }
+}

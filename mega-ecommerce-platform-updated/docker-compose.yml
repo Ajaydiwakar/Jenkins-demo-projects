@@ -1,0 +1,32 @@
+version: '3.8'
+services:
+  frontend-ui:
+    image: mega-frontend:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - PRODUCT_URL=http://product-service:8081
+      - ORDER_URL=http://order-service:8082
+    networks:
+      - jenkins-net
+    depends_on:
+      - product-service
+      - order-service
+
+  product-service:
+    image: mega-product:latest
+    ports:
+      - "8081:8081"
+    networks:
+      - jenkins-net
+
+  order-service:
+    image: mega-order:latest
+    ports:
+      - "8082:8082"
+    networks:
+      - jenkins-net
+
+networks:
+  jenkins-net:
+    external: true

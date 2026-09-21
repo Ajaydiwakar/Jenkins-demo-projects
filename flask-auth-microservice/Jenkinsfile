@@ -1,0 +1,72 @@
+pipeline {
+    agent any
+    environment {
+        APP_NAME = 'flask-auth-microservice'
+        IMAGE_TAG = "latest"
+        NETWORK = 'jenkins-net'
+        PORT = '5000'
+        // Demonstrating secrets management (normally injected via Jenkins Credentials)
+        // If this fails, make sure you created a Secret Text named 'demo-auth-secret'
+        AUTH_SECRET = credentials('demo-auth-secret')
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        stage('Python Build & Test') {
+            steps {
+                sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install -r requirements.txt
+                    PYTHONPATH=. pytest tests/
+                '''
+            }
+        }
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh 'sonar-scanner'
+                }
+            }
+        }
+        stage('Docker Build') {
+            steps {
+                sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
+            }
+        }
+        stage('Trivy Image Scan') {
+            steps {
+                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${APP_NAME}:${IMAGE_TAG}"
+            }
+        }
+        stage('Deploy to Local Network') {
+            steps {
+                script {
+                    sh "docker rm -f ${APP_NAME}-container || true"
+                    
+                    // Injecting the Jenkins Secret into the Docker Container as an Env Var
+                    sh """
+                        docker run -d \
+                          --name ${APP_NAME}-container \
+                          --network ${NETWORK} \
+                          -p ${PORT}:${PORT} \
+                          -e AUTH_SECRET=${AUTH_SECRET} \
+                          ${APP_NAME}:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+    }
+    post {
+        always {
+            echo 'Pipeline execution complete.'
+            sh 'docker image prune -f'
+        }
+        success {
+            echo "Successfully deployed to http://localhost:${PORT}/auth"
+        }
+    }
+}

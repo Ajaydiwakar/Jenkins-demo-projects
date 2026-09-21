@@ -1,0 +1,79 @@
+pipeline {
+    agent any
+    
+    // The key learning objective: Triggers!
+    // This cron expression runs the job daily at a random hour (H) to distribute load.
+    triggers {
+        cron('H H * * *')
+    }
+
+    environment {
+        APP_NAME = 'python-web-scraper'
+        IMAGE_TAG = "latest"
+        NETWORK = 'jenkins-net'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Python Build & Test') {
+            steps {
+                sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install -r requirements.txt
+                    pytest tests/
+                '''
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh 'sonar-scanner'
+                }
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${APP_NAME}:${IMAGE_TAG}"
+            }
+        }
+
+        stage('Execute Scraping Job') {
+            steps {
+                script {
+                    // Unlike a web server, a scraper runs and exits. 
+                    // We use --rm to automatically delete the container once the script finishes.
+                    sh """
+                        docker run --rm \
+                          --name ${APP_NAME}-run \
+                          --network ${NETWORK} \
+                          ${APP_NAME}:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Pipeline execution complete.'
+            sh 'docker image prune -f'
+        }
+        success {
+            echo "Scraping job executed successfully!"
+        }
+    }
+}

@@ -1,0 +1,76 @@
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME = 'django-task-tracker'
+        IMAGE_TAG = "latest"
+        NETWORK = 'jenkins-net'
+        PORT = '8000'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Python Build & Test') {
+            steps {
+                sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install -r requirements.txt
+                    # Run Django tests using manage.py
+                    python manage.py test
+                '''
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh 'sonar-scanner'
+                }
+            }
+        }
+
+        stage('Docker Multi-Stage Build') {
+            steps {
+                sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+                sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${APP_NAME}:${IMAGE_TAG}"
+            }
+        }
+
+        stage('Deploy to Local Network') {
+            steps {
+                script {
+                    sh "docker rm -f ${APP_NAME}-container || true"
+                    
+                    sh """
+                        docker run -d \
+                          --name ${APP_NAME}-container \
+                          --network ${NETWORK} \
+                          -p ${PORT}:${PORT} \
+                          ${APP_NAME}:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Pipeline execution complete.'
+            sh 'docker image prune -f'
+        }
+        success {
+            echo "Successfully deployed ${APP_NAME} to http://localhost:${PORT}/tasks/"
+        }
+    }
+}

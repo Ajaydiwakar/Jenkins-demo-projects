@@ -1,0 +1,83 @@
+pipeline {
+    agent any
+
+    environment {
+        NETWORK = 'jenkins-net'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+
+        stage('Parallel Build & Test') {
+            parallel {
+                stage('Product Service (Java)') {
+                    steps { dir('product-service') { sh 'mvn clean install' } }
+                }
+                stage('Order Service (Node)') {
+                    steps { dir('order-service') { sh 'npm install' } }
+                }
+                stage('Frontend UI (Python)') {
+                    steps { 
+                        dir('frontend-ui') { 
+                            sh 'python3 -m venv venv && . venv/bin/activate && pip install -r requirements.txt' 
+                        } 
+                    }
+                }
+            }
+        }
+
+        stage('SonarQube Security Scan') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh 'sonar-scanner -Dsonar.projectKey=mega-ecommerce -Dsonar.sources=.'
+                }
+            }
+        }
+
+        stage('Parallel Docker Build') {
+            parallel {
+                stage('Build Product Image') {
+                    steps { dir('product-service') { sh 'docker build -t mega-product:latest .' } }
+                }
+                stage('Build Order Image') {
+                    steps { dir('order-service') { sh 'docker build -t mega-order:latest .' } }
+                }
+                stage('Build Frontend Image') {
+                    steps { dir('frontend-ui') { sh 'docker build -t mega-frontend:latest .' } }
+                }
+            }
+        }
+
+        stage('Trivy Image Vulnerability Scan') {
+            parallel {
+                stage('Scan Product') { steps { sh 'trivy image --exit-code 0 mega-product:latest' } }
+                stage('Scan Order') { steps { sh 'trivy image --exit-code 0 mega-order:latest' } }
+                stage('Scan Frontend') { steps { sh 'trivy image --exit-code 0 mega-frontend:latest' } }
+            }
+        }
+
+        stage('Deploy via Docker Compose') {
+            steps {
+                script {
+                    // Pull down existing stack if running
+                    sh 'docker compose down || true'
+                    // Deploy new stack
+                    sh 'docker compose up -d'
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Mega Pipeline execution complete.'
+            sh 'docker image prune -f'
+        }
+        success {
+            echo "Successfully deployed the Mega E-Commerce Platform!"
+            echo "Access the unified dashboard at: http://localhost:3000"
+        }
+    }
+}

@@ -1,0 +1,59 @@
+pipeline {
+    agent any
+
+    environment {
+        APP_NAME = 'rest-assured-tester'
+        IMAGE_TAG = "latest"
+        NETWORK = 'jenkins-net'
+        TARGET_URL = 'https://jsonplaceholder.typicode.com' // Can be replaced with a local container URL
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    // Running Sonar without tests first just to scan the test code structure
+                    sh 'mvn sonar:sonar'
+                }
+            }
+        }
+
+        stage('Build QA Container') {
+            steps {
+                sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
+            }
+        }
+
+        stage('Execute Automated QA Suite') {
+            steps {
+                script {
+                    // We run the container to execute the tests.
+                    // By passing -e MAVEN_OPTS, we can dynamically change the target URL being tested.
+                    sh """
+                        docker run --rm \
+                          --name ${APP_NAME}-run \
+                          --network ${NETWORK} \
+                          -e MAVEN_OPTS="-DbaseUri=${TARGET_URL}" \
+                          ${APP_NAME}:${IMAGE_TAG}
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Pipeline execution complete.'
+            sh 'docker image prune -f'
+        }
+        success {
+            echo "QA Suite Executed Successfully against ${TARGET_URL}"
+        }
+    }
+}
