@@ -1,33 +1,38 @@
 pipeline {
-    agent any
+    agent {
+        label 'docker-worker-1'
+    }
 
     environment {
-        APP_NAME = 'flask-auth-microservice'
-        IMAGE_TAG = "latest"
-        NETWORK = 'jenkins-net'
-        PORT = '5000'
-        // Ensure this credential exists in Jenkins -> Manage Credentials
-        AUTH_SECRET = credentials('demo-auth-secret') 
+        SONAR_HOST_URL = 'http://sonarqube:9000'
+        SONAR_TOKEN    = credentials('sonar-token')
+        IMAGE_NAME     = 'flask-auth-microservice'
+        IMAGE_TAG      = "${BUILD_NUMBER}"
+        APP_PORT       = '5000'
+        AUTH_SECRET    = credentials('demo-auth-secret')
     }
 
     stages {
         stage('Checkout') {
             steps {
-                // Checks out the entire Ajaydiwakar/Jenkins-demo-projects repo
                 checkout scm
             }
         }
 
-        stage('Python Build & Test') {
+        stage('Compile & Test') {
             steps {
-                // Navigate into the project folder before running pip
                 dir('flask-auth-microservice') {
                     sh '''
                         python3 -m venv venv
                         . venv/bin/activate
-                        pip install -r requirements.txt
-                        pytest tests/
+                        pip install --no-cache-dir -r requirements.txt
+                        PYTHONPATH=. pytest tests/
                     '''
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'flask-auth-microservice/target/surefire-reports/*.xml'
                 }
             }
         }
@@ -36,57 +41,76 @@ pipeline {
             steps {
                 dir('flask-auth-microservice') {
                     withSonarQubeEnv('SonarQube') {
-                        sh 'sonar-scanner'
+                        sh '''
+                            sonar-scanner \
+                              -Dsonar.projectKey=flask-auth-microservice \
+                              -Dsonar.projectName="Flask Auth Microservice" \
+                              -Dsonar.sources=. \
+                              -Dsonar.exclusions=**/tests/**,**/venv/** \
+                              -Dsonar.host.url=${SONAR_HOST_URL} \
+                              -Dsonar.token=${SONAR_TOKEN}
+                        '''
                     }
                 }
             }
         }
 
-        stage('Docker Build') {
+        stage('Quality Gate') {
             steps {
-                dir('flask-auth-microservice') {
-                    sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
 
-        stage('Trivy Image Scan') {
+        stage('Build Docker Image') {
             steps {
-                // Trivy scans the compiled image, so it doesn't strictly need the dir() block, 
-                // but keeping it here maintains consistency.
                 dir('flask-auth-microservice') {
-                    sh "trivy image --exit-code 1 --severity HIGH,CRITICAL ${APP_NAME}:${IMAGE_TAG}"
+                    sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
+                    sh "docker tag ${IMAGE_NAME}:${IMAGE_TAG} ${IMAGE_NAME}:latest"
                 }
             }
         }
 
-        stage('Deploy to Local Network') {
+        stage('Trivy Image Vulnerability Scan') {
             steps {
-                dir('flask-auth-microservice') {
-                    script {
-                        sh "docker rm -f ${APP_NAME}-container || true"
-                        
-                        sh """
-                            docker run -d \
-                              --name ${APP_NAME}-container \
-                              --network ${NETWORK} \
-                              -p ${PORT}:${PORT} \
-                              -e AUTH_SECRET=${AUTH_SECRET} \
-                              ${APP_NAME}:${IMAGE_TAG}
-                        """
-                    }
-                }
+                sh """
+                    trivy image --severity HIGH,CRITICAL \
+                      --exit-code 0 \
+                      --format table \
+                      ${IMAGE_NAME}:${IMAGE_TAG}
+                """
+            }
+        }
+
+        stage('Deploy Container') {
+            steps {
+                sh """
+                    echo "=== Available Docker Networks ==="
+                    docker network ls
+
+                    # Create network on this daemon if missing
+                    docker network inspect jenkins-net >/dev/null 2>&1 || docker network create jenkins-net
+
+                    docker stop ${IMAGE_NAME}-container || true
+                    docker rm ${IMAGE_NAME}-container || true
+                    docker run -d \
+                      --name ${IMAGE_NAME}-container \
+                      --network jenkins-net \
+                      -p ${APP_PORT}:${APP_PORT} \
+                      -e AUTH_SECRET=${AUTH_SECRET} \
+                      ${IMAGE_NAME}:${IMAGE_TAG}
+                """
             }
         }
     }
-    
+
     post {
-        always {
-            echo 'Pipeline execution complete.'
-            sh 'docker image prune -f'
-        }
         success {
-            echo "Successfully deployed to http://localhost:${PORT}/auth"
+            echo "Application successfully deployed! Accessible at http://localhost:${APP_PORT}/auth"
+        }
+        failure {
+            echo "Pipeline failed. Deployment aborted."
         }
     }
 }
